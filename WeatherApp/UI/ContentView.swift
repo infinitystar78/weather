@@ -10,10 +10,9 @@ import CoreLocation
 
 struct ContentView: View {
     @StateObject private var viewModel = WeatherViewModel()
-    @State private var city: String = "London"
-    @State private var searchText = ""
+    @State private var searchText = "London"  // Initialize with London
     @FocusState private var isSearchFocused: Bool
-    
+
     var body: some View {
         ZStack {
             backgroundView
@@ -27,7 +26,13 @@ struct ContentView: View {
                 weatherInfo
                 
                 // Error Message
-                errorMessage
+                if let error = viewModel.errorMessage {
+                    Text(error)
+                        .foregroundColor(.red)
+                        .padding()
+                        .background(Color.white.opacity(0.8))
+                        .cornerRadius(10)
+                }
                 
                 // Forecast
                 forecastView
@@ -35,12 +40,18 @@ struct ContentView: View {
             .padding()
         }
         .task {
-            await viewModel.fetchWeather(for: city)
+            // Direct initial fetch with the default city (London)
+            await performInitialFetch()
         }
     }
-    
-    // MARK: - View Components
-    
+
+    // This function runs the initial fetch for weather
+    private func performInitialFetch() async {
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespaces)
+        guard !trimmedSearch.isEmpty else { return }
+        await viewModel.fetchWeather(for: trimmedSearch)
+    }
+
     private var searchBar: some View {
         HStack {
             TextField("Enter city", text: $searchText)
@@ -55,13 +66,15 @@ struct ContentView: View {
                         await performSearch()
                     }
                 }
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
             
-            Button(action: {
+            Button {
                 isSearchFocused = false
                 Task {
                     await performSearch()
                 }
-            }) {
+            } label: {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.white)
                     .padding(10)
@@ -73,8 +86,11 @@ struct ContentView: View {
     }
     
     private func performSearch() async {
-        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        await viewModel.fetchWeather(for: searchText)
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespaces)
+        guard !trimmedSearch.isEmpty else { return }
+        
+        isSearchFocused = false
+        await viewModel.fetchWeather(for: trimmedSearch)
     }
     
     private var weatherInfo: some View {
@@ -105,6 +121,7 @@ struct ContentView: View {
                 .padding()
                 .background(Color.black.opacity(0.2))
                 .cornerRadius(20)
+                .transition(.opacity)
             } else {
                 ProgressView()
                     .progressViewStyle(CircularProgressViewStyle(tint: .white))
@@ -112,30 +129,18 @@ struct ContentView: View {
         }
     }
     
-    private var errorMessage: some View {
-        Group {
-            if let error = viewModel.errorMessage {
-                Text(error)
-                    .foregroundColor(.red)
-                    .padding()
-                    .background(Color.white.opacity(0.8))
-                    .cornerRadius(10)
-            }
-        }
-    }
-    
     private var forecastView: some View {
         Group {
-            if let forecast = viewModel.forecast?.daily {
+            if let forecastList = viewModel.forecast?.list {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 15) {
-                        ForEach(forecast, id: \.dt) { day in
+                        ForEach(forecastList, id: \.dt) { detail in
                             VStack(spacing: 10) {
-                                Text(formatDate(day.dt))
+                                Text(formatDate(detail.dt))
                                     .font(.system(size: 16, weight: .medium))
-                                Text("\(Int(round(day.temp.day)))°C")
+                                Text("\(Int(round(detail.main.temp)))°C")
                                     .font(.system(size: 20, weight: .bold))
-                                Text(day.weather.first?.description.capitalized ?? "")
+                                Text(detail.weather.first?.description.capitalized ?? "")
                                     .font(.system(size: 14))
                                     .multilineTextAlignment(.center)
                             }
@@ -147,6 +152,7 @@ struct ContentView: View {
                     }
                     .padding(.horizontal)
                 }
+                .transition(.opacity)
             }
         }
     }
@@ -186,5 +192,3 @@ struct ContentView: View {
         }
     }
 }
-
-
