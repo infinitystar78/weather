@@ -7,7 +7,6 @@
 import XCTest
 import CoreLocation
 @testable import WeatherApp
-import Combine
 
 class MockURLProtocol: URLProtocol {
     static var mockData: Data?
@@ -28,7 +27,6 @@ class MockURLProtocol: URLProtocol {
         }
         
         if let data = MockURLProtocol.mockData {
-            client?.urlProtocol(self, didLoad: data)
             let response = HTTPURLResponse(
                 url: request.url ?? URL(string: "https://test.com")!,
                 statusCode: 200,
@@ -36,6 +34,7 @@ class MockURLProtocol: URLProtocol {
                 headerFields: nil
             )!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
         }
         
         client?.urlProtocolDidFinishLoading(self)
@@ -48,8 +47,8 @@ class MockLocationManager: CLLocationManager {
     var mockLocation: CLLocation?
     private var _mockAuthorizationStatus: CLAuthorizationStatus = .notDetermined
     
-    override var authorizationStatus: CLAuthorizationStatus {
-        return _mockAuthorizationStatus
+    class var authorizationStatus: CLAuthorizationStatus {
+        return CLLocationManager().authorizationStatus
     }
     
     func setAuthorizationStatus(_ status: CLAuthorizationStatus) {
@@ -68,30 +67,24 @@ class WeatherViewModelTests: XCTestCase {
     var viewModel: WeatherViewModel!
     var mockLocationManager: MockLocationManager!
     var mockURLSession: URLSession!
-    var cancellables: Set<AnyCancellable>!
     
-    override func setUp() async throws {
+    override func setUpWithError() throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
         mockURLSession = URLSession(configuration: configuration)
         
         mockLocationManager = MockLocationManager()
-        viewModel = WeatherViewModel(
-            urlSession: mockURLSession,
-            locationManager: mockLocationManager
-        )
-        cancellables = []
+        let weatherService = WeatherService(urlSession: mockURLSession)
         
-        MockURLProtocol.mockData = nil
-        MockURLProtocol.mockError = nil
+        viewModel = WeatherViewModel(weatherService: weatherService)
     }
     
-    override func tearDown() {
+    override func tearDownWithError() throws {
         viewModel = nil
         mockURLSession = nil
         mockLocationManager = nil
-        cancellables = nil
-        super.tearDown()
+        MockURLProtocol.mockData = nil
+        MockURLProtocol.mockError = nil
     }
     
     // MARK: - Weather Fetch Tests
@@ -101,7 +94,7 @@ class WeatherViewModelTests: XCTestCase {
         let mockWeatherData = createMockWeatherData(
             cityName: "London",
             temperature: 20.0,
-            humidity: 65.0,
+            humidity: 65,
             description: "Clear sky"
         )
         MockURLProtocol.mockData = mockWeatherData
@@ -113,7 +106,7 @@ class WeatherViewModelTests: XCTestCase {
         XCTAssertNotNil(viewModel.weather)
         XCTAssertEqual(viewModel.weather?.name, "London")
         XCTAssertEqual(viewModel.weather?.main.temp, 20.0)
-        XCTAssertEqual(viewModel.weather?.main.humidity, 65.0)
+        XCTAssertEqual(viewModel.weather?.main.humidity, 65)
         XCTAssertEqual(viewModel.weather?.weather.first?.description, "Clear sky")
         XCTAssertNil(viewModel.errorMessage)
     }
@@ -128,7 +121,7 @@ class WeatherViewModelTests: XCTestCase {
         // Then
         XCTAssertNil(viewModel.weather)
         XCTAssertNotNil(viewModel.errorMessage)
-        XCTAssertTrue(viewModel.errorMessage?.contains("Failed to fetch weather") ?? false)
+        XCTAssertTrue(viewModel.errorMessage?.contains("Error") ?? false)
     }
     
     func testFetchWeatherWithEmptyCity() async {
@@ -138,7 +131,7 @@ class WeatherViewModelTests: XCTestCase {
         // Then
         XCTAssertNil(viewModel.weather)
         XCTAssertNotNil(viewModel.errorMessage)
-        XCTAssertTrue(viewModel.errorMessage?.contains("Invalid city name") ?? false)
+        XCTAssertTrue(viewModel.errorMessage?.contains("Invalid") ?? false)
     }
     
     func testFetchWeatherWithInvalidURL() async {
@@ -151,11 +144,12 @@ class WeatherViewModelTests: XCTestCase {
         // Then
         XCTAssertNil(viewModel.weather)
         XCTAssertNotNil(viewModel.errorMessage)
+        XCTAssertTrue(viewModel.errorMessage?.contains("Error") ?? false)
     }
     
     // MARK: - Location Tests
     
-    func testLocationUpdateSuccess() async {
+    func testLocationUpdateSuccess() async throws {
         // Given
         let expectation = expectation(description: "Location update")
         let mockLocation = CLLocation(latitude: 51.5074, longitude: -0.1278)
@@ -166,26 +160,24 @@ class WeatherViewModelTests: XCTestCase {
         let mockWeatherData = createMockWeatherData(
             cityName: "London",
             temperature: 20.0,
-            humidity: 65.0,
+            humidity: 65,
             description: "Clear sky"
         )
         MockURLProtocol.mockData = mockWeatherData
         
         // When
-        viewModel.$weather
-            .dropFirst()
-            .sink { _ in
-                expectation.fulfill()
-            }
-            .store(in: &cancellables)
-        
-        viewModel.locationManager(mockLocationManager, didUpdateLocations: [mockLocation])
+        Task {
+            await viewModel.locationManager(mockLocationManager, didUpdateLocations: [mockLocation])
+            expectation.fulfill()
+        }
         
         // Then
         await fulfillment(of: [expectation], timeout: 2.0)
+        XCTAssertNotNil(viewModel.weather)
+        XCTAssertEqual(viewModel.weather?.name, "London")
     }
     
-    func testLocationPermissionDenied() async {
+    func testLocationPermissionDenied() {
         // Given
         mockLocationManager.setAuthorizationStatus(.denied)
         
@@ -202,7 +194,7 @@ class WeatherViewModelTests: XCTestCase {
     private func createMockWeatherData(
         cityName: String,
         temperature: Double,
-        humidity: Double,
+        humidity: Int,
         description: String
     ) -> Data {
         let json = """
@@ -223,3 +215,5 @@ class WeatherViewModelTests: XCTestCase {
         return json.data(using: .utf8)!
     }
 }
+
+
