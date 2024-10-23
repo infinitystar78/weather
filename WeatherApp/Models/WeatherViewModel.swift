@@ -13,26 +13,23 @@ class WeatherViewModel: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var weather: Weather?
     @Published var forecast: Forecast?
     @Published var errorMessage: String?
-
+    
+    private let weatherService: WeatherServiceProtocol
     private let locationManager: CLLocationManager
-    private let urlSession: URLSession
-
-    init(
-        urlSession: URLSession = .shared,
-        locationManager: CLLocationManager = CLLocationManager()
-    ) {
-        self.urlSession = urlSession
-        self.locationManager = locationManager
+    
+    init(weatherService: WeatherServiceProtocol = WeatherService()) {
+        self.weatherService = weatherService
+        self.locationManager = CLLocationManager()
         super.init()
         setupLocationManager()
     }
-
+    
     private func setupLocationManager() {
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyKilometer
         requestLocationPermission()
     }
-
+    
     private func requestLocationPermission() {
         switch locationManager.authorizationStatus {
         case .notDetermined:
@@ -43,125 +40,95 @@ class WeatherViewModel: NSObject, ObservableObject, CLLocationManagerDelegate {
             startLocationUpdatesIfAuthorized()
         }
     }
-
+    
     private func startLocationUpdatesIfAuthorized() {
         if locationManager.authorizationStatus == .authorizedWhenInUse ||
             locationManager.authorizationStatus == .authorizedAlways {
             locationManager.startUpdatingLocation()
         }
     }
-
+    
     func fetchWeather(for city: String) async {
-        guard !city.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-
-        let cityQuery = city.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? city
-        let urlString = "https://api.openweathermap.org/data/2.5/weather?q=\(cityQuery)&appid=\(Config.apiKey)&units=metric"
-        
-        guard let url = URL(string: urlString) else {
-            DispatchQueue.main.async {
-                self.errorMessage = "Invalid URL."
-            }
-            return
-        }
-
         do {
-            let (data, response) = try await urlSession.data(from: url)
-            
-            // Check for valid HTTP status code
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                DispatchQueue.main.async {
-                    self.errorMessage = "Invalid response from the server. Please try again."
-                }
-                return
-            }
-
-            let decodedWeather = try JSONDecoder().decode(Weather.self, from: data)
-
-            // Update weather immediately after successful fetch
+            let weather = try await weatherService.fetchWeather(for: city)
             DispatchQueue.main.async {
-                self.weather = decodedWeather
+                self.weather = weather
                 self.errorMessage = nil
             }
-
-            // Now fetch forecast
-            let forecastUrlString = "https://api.openweathermap.org/data/2.5/forecast?q=\(cityQuery)&appid=\(Config.apiKey)&units=metric"
-            if let forecastUrl = URL(string: forecastUrlString) {
-                let (forecastData, _) = try await urlSession.data(from: forecastUrl)
-                let decodedForecast = try JSONDecoder().decode(Forecast.self, from: forecastData)
-
-                DispatchQueue.main.async {
-                    self.forecast = decodedForecast
-                }
-            }
-        } catch let decodingError as DecodingError {
-            print("Decoding error: \(decodingError)")
-            DispatchQueue.main.async {
-                self.errorMessage = "Data format is incorrect. Unable to parse response."
-            }
         } catch {
-            print("Error fetching weather: \(error)")
             DispatchQueue.main.async {
                 self.errorMessage = "Could not find weather for \(city). Error: \(error.localizedDescription)"
             }
         }
     }
-
+    
+    func fetchForecast(for city: String) async {
+        do {
+            let forecast = try await weatherService.fetchForecast(for: city)
+            DispatchQueue.main.async {
+                self.forecast = forecast
+                self.errorMessage = nil
+            }
+        } catch {
+            DispatchQueue.main.async {
+                self.errorMessage = "Could not find forecast for \(city). Error: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    func fetchWeather(lat: Double, lon: Double) async {
+        do {
+            let weather = try await weatherService.fetchWeather(lat: lat, lon: lon)
+            DispatchQueue.main.async {
+                self.weather = weather
+                self.errorMessage = nil
+            }
+        } catch {
+            DispatchQueue.main.async {
+                self.errorMessage = "Could not find weather for the current location. Error: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    func fetchForecast(lat: Double, lon: Double) async {
+        do {
+            let forecast = try await weatherService.fetchForecast(lat: lat, lon: lon)
+            DispatchQueue.main.async {
+                self.forecast = forecast
+                self.errorMessage = nil
+            }
+        } catch {
+            DispatchQueue.main.async {
+                self.errorMessage = "Could not find forecast for the current location. Error: \(error.localizedDescription)"
+            }
+        }
+    }
+    
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.first else { return }
         locationManager.stopUpdatingLocation()
         Task {
             await fetchWeather(lat: location.coordinate.latitude, lon: location.coordinate.longitude)
+            await fetchForecast(lat: location.coordinate.latitude, lon: location.coordinate.longitude)
         }
     }
-
-    func fetchWeather(lat: Double, lon: Double) async {
-        let urlString = "https://api.openweathermap.org/data/2.5/weather?lat=\(lat)&lon=\(lon)&appid=\(Config.apiKey)&units=metric"
-
-        guard let url = URL(string: urlString) else {
-            DispatchQueue.main.async {
-                self.errorMessage = "Invalid URL for location-based weather."
-            }
-            return
+    
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        DispatchQueue.main.async {
+            self.errorMessage = "Location error: \(error.localizedDescription)"
         }
-
-        do {
-            let (data, response) = try await urlSession.data(from: url)
-
-            // Check for valid HTTP status code
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                DispatchQueue.main.async {
-                    self.errorMessage = "Invalid response from the server for current location."
-                }
-                return
-            }
-
-            let decodedWeather = try JSONDecoder().decode(Weather.self, from: data)
-
+    }
+    
+    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+        switch status {
+        case .authorizedWhenInUse, .authorizedAlways:
+            startLocationUpdatesIfAuthorized()
+        case .denied, .restricted:
             DispatchQueue.main.async {
-                self.weather = decodedWeather
-                self.errorMessage = nil
+                self.errorMessage = "Location access is denied. Please enable it in settings."
             }
-
-            // Fetch the forecast for the given location
-            let forecastUrlString = "https://api.openweathermap.org/data/2.5/forecast?lat=\(lat)&lon=\(lon)&appid=\(Config.apiKey)&units=metric"
-            if let forecastUrl = URL(string: forecastUrlString) {
-                let (forecastData, _) = try await urlSession.data(from: forecastUrl)
-                let decodedForecast = try JSONDecoder().decode(Forecast.self, from: forecastData)
-
-                DispatchQueue.main.async {
-                    self.forecast = decodedForecast
-                }
-            }
-        } catch let decodingError as DecodingError {
-            print("Decoding error: \(decodingError)")
-            DispatchQueue.main.async {
-                self.errorMessage = "Data format is incorrect. Unable to parse response."
-            }
-        } catch {
-            print("Error fetching weather: \(error)")
-            DispatchQueue.main.async {
-                self.errorMessage = "Could not find weather for current location. Error: \(error.localizedDescription)"
-            }
+        default:
+            break
         }
     }
 }
